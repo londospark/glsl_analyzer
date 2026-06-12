@@ -1000,6 +1000,145 @@ fn findCursors(document: *Document) !std.StringArrayHashMap(Cursor) {
     return cursors;
 }
 
+fn expectVisibleFields(
+    source: []const u8,
+    cases: []const struct {
+        /// Cursor marker (e.g. /*1*/) placed at the RHS identifier of a field selection
+        cursor: []const u8,
+        /// Expected field names returned by visibleFields
+        expected: []const []const u8,
+    },
+) !void {
+    var workspace = try Workspace.init(std.testing.allocator);
+    defer workspace.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const document = try workspace.getOrCreateDocument(.{ .uri = "file://test.glsl", .version = 0 });
+    try document.replaceAll(source);
+
+    const parsed = try document.parseTree();
+    const tree = parsed.tree;
+
+    var cursors = try findCursors(document);
+    defer cursors.deinit();
+
+    for (cases) |case| {
+        const cursor = cursors.get(case.cursor) orelse std.debug.panic("invalid cursor: {s}", .{case.cursor});
+
+        // For visibleFields to work, we need to call it with the "." node
+        // or the LHS identifier. Find the Selection parent and get the field node.
+        const parent = tree.parent(cursor.node) orelse {
+            try std.testing.expect(case.expected.len == 0);
+            continue;
+        };
+        const selection = syntax.ExtractorMixin(syntax.Selection).tryExtract(tree, parent) orelse {
+            try std.testing.expect(case.expected.len == 0);
+            continue;
+        };
+
+        // Get the LHS (field) node of the selection
+        const lhs = selection.get(.field, tree) orelse {
+            try std.testing.expect(case.expected.len == 0);
+            continue;
+        };
+
+        var symbols = std.ArrayList(Reference).init(arena.allocator());
+        try visibleFields(arena.allocator(), document, lhs.node, &symbols);
+
+        try std.testing.expectEqual(case.expected.len, symbols.items.len);
+        for (case.expected, symbols.items) |expected_name, symbol| {
+            try std.testing.expectEqualStrings(expected_name, symbol.name());
+        }
+    }
+}
+
+test "visibleFields finds struct fields" {
+    try expectVisibleFields(
+        \\struct Vertex { vec4 pos; vec3 normal; };
+        \\void main() {
+        \\    Vertex v0;
+        \\    v0./*1*/pos;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{ "pos", "normal" } },
+    });
+}
+
+test "visibleFields with multiple fields" {
+    try expectVisibleFields(
+        \\struct Data { int x; float y; double z; };
+        \\void main() {
+        \\    Data d;
+        \\    d./*1*/x;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{ "x", "y", "z" } },
+    });
+}
+
+test "visibleFields empty struct returns nothing" {
+    try expectVisibleFields(
+        \\struct Empty {};
+        \\void main() {
+        \\    Empty e;
+        \\    e./*1*/x;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{} },
+    });
+}
+
+test "visibleFields not a field access returns nothing" {
+    try expectVisibleFields(
+        \\struct Vertex { vec4 pos; };
+        \\void main() {
+        \\    Vertex /*1*/v0;
+        \\    v0.pos;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{} },
+    });
+}
+
+test "visibleFields nested struct" {
+    try expectVisibleFields(
+        \\struct Inner { int a; float b; };
+        \\struct Outer { Inner inner; };
+        \\void main() {
+        \\    Outer o;
+        \\    o./*1*/inner;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{"inner"} },
+    });
+}
+
+test "visibleFields recursive struct" {
+    try expectVisibleFields(
+        \\struct Inner { int a; float b; };
+        \\struct Outer { Inner inner; int c; };
+        \\void main() {
+        \\    Outer o;
+        \\    o./*1*/inner;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{ "inner", "c" } },
+    });
+}
+
+test "visibleFields unknown type returns nothing" {
+    try expectVisibleFields(
+        \\void main() {
+        \\    UnknownType v;
+        \\    v./*1*/field;
+        \\}
+    , &.{
+        .{ .cursor = "/*1*/", .expected = &.{} },
+    });
+}
+
 test {
     std.testing.refAllDeclsRecursive(@This());
 }
