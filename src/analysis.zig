@@ -232,11 +232,22 @@ pub fn visibleFields(
         const tree = parsed.tree;
 
         const tag = tree.tag(start_node);
+        std.log.debug("visibleFields: tag={s} node={}", .{ @tagName(tag), start_node });
         if (tag != .identifier and tag != .@".") return;
 
-        const parent = tree.parent(start_node) orelse return;
-        const selection = syntax.ExtractorMixin(syntax.Selection).tryExtract(tree, parent) orelse return;
-        var target = selection.get(.target, tree) orelse return;
+        const parent = tree.parent(start_node) orelse {
+            std.log.debug("visibleFields: no parent", .{});
+            return;
+        };
+        std.log.debug("visibleFields: parent tag={s}", .{@tagName(tree.tag(parent))});
+        const selection = syntax.ExtractorMixin(syntax.Selection).tryExtract(tree, parent) orelse {
+            std.log.debug("visibleFields: parent is not a Selection", .{});
+            return;
+        };
+        var target = selection.get(.target, tree) orelse {
+            std.log.debug("visibleFields: no target in selection", .{});
+            return;
+        };
 
         while (true) {
             switch (target.get(tree)) {
@@ -249,12 +260,13 @@ pub fn visibleFields(
     };
 
     if (lhs == start_node) {
-        // possible infinite loop if we are coming from `findDefinition`
+        std.log.debug("visibleFields: lhs == start_node, returning (infinite loop guard)", .{});
         return;
     }
 
     var name_definitions = std.ArrayList(Reference).init(arena);
     try findDefinition(arena, document, lhs, &name_definitions);
+    std.log.debug("visibleFields: found {} definitions for LHS", .{name_definitions.items.len});
 
     var references = std.ArrayList(Reference).init(document.workspace.allocator);
     defer references.deinit();
@@ -272,27 +284,45 @@ pub fn visibleFields(
             const parsed = try reference.document.parseTree();
             const tree = parsed.tree;
 
-            const typ = try typeOf(reference) orelse continue;
+            const typ = try typeOf(reference) orelse {
+                std.log.debug("visibleFields: typeOf returned null for reference", .{});
+                continue;
+            };
 
             const fields = if (typ.block_fields) |block_fields|
                 block_fields
             else blk: {
-                const specifier = typ.specifier orelse continue;
+                const specifier = typ.specifier orelse {
+                    std.log.debug("visibleFields: no specifier in type", .{});
+                    continue;
+                };
                 switch (specifier) {
                     .struct_specifier => |struct_spec| {
+                        std.log.debug("visibleFields: type is struct_specifier", .{});
                         if (struct_spec.get(.fields, tree)) |fields| {
+                            std.log.debug("visibleFields: found struct fields", .{});
                             break :blk fields.get(tree);
+                        } else {
+                            std.log.debug("visibleFields: struct_specifier has no fields", .{});
                         }
                     },
                     else => {
-                        const identifier = specifier.underlyingName(tree) orelse continue;
-                        if (identifier.node == start_node) continue;
+                        const identifier = specifier.underlyingName(tree) orelse {
+                            std.log.debug("visibleFields: no underlyingName in specifier", .{});
+                            continue;
+                        };
+                        std.log.debug("visibleFields: type is named type, resolving '{s}'", .{nodeName(tree, identifier.node, reference.document.source()) orelse "?"});
+                        if (identifier.node == start_node) {
+                            std.log.debug("visibleFields: named type node == start_node, skipping", .{});
+                            continue;
+                        }
                         try findDefinition(arena, reference.document, identifier.node, &references);
                     },
                 }
                 continue;
             };
 
+            std.log.debug("visibleFields: iterating fields", .{});
             var iterator = fields.iterator();
             while (iterator.next(tree)) |field| {
                 const variables = field.get(.variables, tree) orelse continue;
@@ -309,6 +339,7 @@ pub fn visibleFields(
             }
         }
     }
+    std.log.debug("visibleFields: found {} symbols", .{symbols.items.len});
 }
 
 pub const Scope = struct {

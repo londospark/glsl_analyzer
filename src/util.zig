@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const lsp = @import("lsp.zig");
 
 pub fn JsonEnumAsIntMixin(comptime Self: type) type {
@@ -76,7 +77,20 @@ pub fn pathFromUri(allocator: std.mem.Allocator, uri: []const u8) ![]u8 {
     const scheme = "file://";
     if (!std.mem.startsWith(u8, uri, scheme)) return error.UnknownUrlScheme;
     const uri_path = uri[scheme.len..];
-    return percentDecode(allocator, uri_path);
+    var decoded = try percentDecode(allocator, uri_path);
+
+    // On Windows, strip leading '/' from drive-letter paths like "/C:/..." or "/C%3A/..."
+    // so that std.fs functions get a valid absolute path (e.g., "C:/...").
+    if (builtin.target.os.tag == .windows) {
+        if (decoded.len >= 3 and decoded[0] == '/' and std.ascii.isAlphabetic(decoded[1]) and decoded[2] == ':') {
+            const result = try allocator.alloc(u8, decoded.len - 1);
+            @memcpy(result, decoded[1..]);
+            allocator.free(decoded);
+            return result;
+        }
+    }
+
+    return decoded;
 }
 
 pub fn uriFromPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -167,6 +181,39 @@ fn parseNibble(byte: u8) !u4 {
         'a'...'f' => return @intCast(byte - 'a' + 10),
         else => return error.InvalidByte,
     }
+}
+
+test "pathFromUri windows drive letter" {
+    // These should only apply on Windows (strip leading '/' from drive-letter paths).
+    if (builtin.target.os.tag == .windows) {
+        {
+            const path = try pathFromUri(std.testing.allocator, "file:///X:/Code/shaders/test.glsl");
+            defer std.testing.allocator.free(path);
+            try std.testing.expectEqualStrings("X:/Code/shaders/test.glsl", path);
+        }
+        {
+            const path = try pathFromUri(std.testing.allocator, "file:///X%3A/Code/shaders/test.glsl");
+            defer std.testing.allocator.free(path);
+            try std.testing.expectEqualStrings("X:/Code/shaders/test.glsl", path);
+        }
+        {
+            const path = try pathFromUri(std.testing.allocator, "file:///x%3A/Code/shaders/test.glsl");
+            defer std.testing.allocator.free(path);
+            try std.testing.expectEqualStrings("x:/Code/shaders/test.glsl", path);
+        }
+    }
+}
+
+test "pathFromUri unix path unchanged" {
+    const path = try pathFromUri(std.testing.allocator, "file:///home/user/test.glsl");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("/home/user/test.glsl", path);
+}
+
+test "pathFromUri relative path unchanged" {
+    const path = try pathFromUri(std.testing.allocator, "file://test.glsl");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("test.glsl", path);
 }
 
 test "percentEncodePath" {
