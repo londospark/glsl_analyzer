@@ -653,7 +653,7 @@ pub const Dispatch = struct {
                 try completions.append(.{
                     .label = symbol.name(),
                     .labelDetails = .{
-                        .detail = type_signature,
+                        .description = type_signature,
                     },
                     .detail = type_signature,
                     .kind = switch (parsed.tree.tag(symbol.parent_declaration)) {
