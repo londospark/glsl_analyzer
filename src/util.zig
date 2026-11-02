@@ -183,6 +183,58 @@ fn parseNibble(byte: u8) !u4 {
     }
 }
 
+test "pathFromUri windows with spaces in path" {
+    if (builtin.target.os.tag == .windows) {
+        const path = try pathFromUri(std.testing.allocator, "file:///C:/Users/My%20Documents/test.glsl");
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings("C:/Users/My Documents/test.glsl", path);
+    }
+}
+
+test "pathFromUri windows no drive letter does not strip" {
+    if (builtin.target.os.tag == .windows) {
+        const path = try pathFromUri(std.testing.allocator, "file:///some/path/without/drive");
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings("/some/path/without/drive", path);
+    }
+}
+
+test "pathFromUri windows root path" {
+    if (builtin.target.os.tag == .windows) {
+        const path = try pathFromUri(std.testing.allocator, "file:///C:/");
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings("C:/", path);
+    }
+}
+
+test "pathFromUri windows path with trailing slash" {
+    if (builtin.target.os.tag == .windows) {
+        const path = try pathFromUri(std.testing.allocator, "file:///D:/projects/shaders/");
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings("D:/projects/shaders/", path);
+    }
+}
+
+test "pathFromUri roundtrip Windows" {
+    if (builtin.target.os.tag == .windows) {
+        const original_path = "Z:/some/deeply/nested/path/file.glsl";
+        const uri = try uriFromPath(std.testing.allocator, original_path);
+        defer std.testing.allocator.free(uri);
+        const decoded = try pathFromUri(std.testing.allocator, uri);
+        defer std.testing.allocator.free(decoded);
+        try std.testing.expectEqualStrings(original_path, decoded);
+    }
+}
+
+test "pathFromUri roundtrip Unix" {
+    const original_path = "/home/user/project/shaders/file.glsl";
+    const uri = try uriFromPath(std.testing.allocator, original_path);
+    defer std.testing.allocator.free(uri);
+    const decoded = try pathFromUri(std.testing.allocator, uri);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(original_path, decoded);
+}
+
 test "pathFromUri windows drive letter" {
     // These should only apply on Windows (strip leading '/' from drive-letter paths).
     if (builtin.target.os.tag == .windows) {
